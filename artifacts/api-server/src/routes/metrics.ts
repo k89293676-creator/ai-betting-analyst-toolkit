@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { desc, eq, and, gte, sql } from "drizzle-orm";
+import { desc, gte } from "drizzle-orm";
 import { db, predictionsTable, performanceMetricsTable } from "@workspace/db";
 import { GetPerformanceMetricsQueryParams } from "@workspace/api-zod";
 
@@ -16,13 +16,55 @@ router.get("/metrics/performance", async (req, res): Promise<void> => {
   const since = new Date();
   since.setDate(since.getDate() - days);
 
-  const metrics = await db
+  const stored = await db
     .select()
     .from(performanceMetricsTable)
     .where(gte(performanceMetricsTable.date, since))
     .orderBy(desc(performanceMetricsTable.date));
 
-  res.json(metrics);
+  if (stored.length > 0) {
+    res.json(stored);
+    return;
+  }
+
+  const allPredictions = await db.select().from(predictionsTable);
+  const settled = allPredictions.filter(
+    (p) => p.status === "won" || p.status === "lost"
+  );
+
+  if (settled.length === 0) {
+    res.json([]);
+    return;
+  }
+
+  const totalPredictions = settled.length;
+  const correctPredictions = settled.filter((p) => p.status === "won").length;
+  const accuracy = totalPredictions > 0 ? correctPredictions / totalPredictions : 0;
+  const roi =
+    totalPredictions > 0
+      ? settled.reduce((sum, p) => {
+          if (p.status === "won") return sum + (p.odds - 1) * p.kellyFraction;
+          return sum - p.kellyFraction;
+        }, 0) / totalPredictions
+      : 0;
+  const avgConfidence =
+    totalPredictions > 0
+      ? settled.reduce((sum, p) => sum + p.confidence, 0) / totalPredictions
+      : 0;
+
+  res.json([
+    {
+      id: 0,
+      date: new Date().toISOString(),
+      sport: null,
+      totalPredictions,
+      correctPredictions,
+      accuracy,
+      roi,
+      avgConfidence,
+      createdAt: new Date().toISOString(),
+    },
+  ]);
 });
 
 router.get("/metrics/summary", async (req, res): Promise<void> => {
@@ -35,16 +77,9 @@ router.get("/metrics/summary", async (req, res): Promise<void> => {
   const settled = won + lost;
 
   const overallAccuracy = settled > 0 ? won / settled : 0;
+  const avgConfidence = total > 0 ? allPredictions.reduce((s, p) => s + p.confidence, 0) / total : 0;
 
-  const avgConfidence =
-    total > 0
-      ? allPredictions.reduce((sum, p) => sum + p.confidence, 0) / total
-      : 0;
-
-  const settledPredictions = allPredictions.filter(
-    (p) => p.status === "won" || p.status === "lost"
-  );
-
+  const settledPredictions = allPredictions.filter((p) => p.status === "won" || p.status === "lost");
   const overallRoi =
     settledPredictions.length > 0
       ? settledPredictions.reduce((sum, p) => {
@@ -54,22 +89,18 @@ router.get("/metrics/summary", async (req, res): Promise<void> => {
       : 0;
 
   const sportMap: Record<string, { won: number; settled: number }> = {};
-  for (const p of allPredictions) {
-    if (p.status === "won" || p.status === "lost") {
-      if (!sportMap[p.sport]) sportMap[p.sport] = { won: 0, settled: 0 };
-      sportMap[p.sport].settled++;
-      if (p.status === "won") sportMap[p.sport].won++;
-    }
+  for (const p of settledPredictions) {
+    if (!sportMap[p.sport]) sportMap[p.sport] = { won: 0, settled: 0 };
+    sportMap[p.sport].settled++;
+    if (p.status === "won") sportMap[p.sport].won++;
   }
 
   let bestSport: string | null = null;
-  let bestAccuracy = -1;
+  let bestAcc = -1;
   for (const [sport, stats] of Object.entries(sportMap)) {
-    const acc = stats.settled > 0 ? stats.won / stats.settled : 0;
-    if (acc > bestAccuracy && stats.settled >= 3) {
-      bestAccuracy = acc;
-      bestSport = sport;
-    }
+    if (stats.settled < 3) continue;
+    const acc = stats.won / stats.settled;
+    if (acc > bestAcc) { bestAcc = acc; bestSport = sport; }
   }
 
   let currentStreak = 0;
