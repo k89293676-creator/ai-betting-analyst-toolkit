@@ -1,16 +1,66 @@
 import { Router, type IRouter } from "express";
-import { desc, eq } from "drizzle-orm";
+import { desc } from "drizzle-orm";
 import { db, predictionsTable, trainingRecordsTable } from "@workspace/db";
 import { ai } from "@workspace/integrations-gemini-ai";
 
 const router: IRouter = Router();
+
+function brierScore(predictions: Array<{ confidence: number; status: string }>): number {
+  if (predictions.length === 0) return 0;
+  return (
+    predictions.reduce((sum, p) => {
+      const outcome = p.status === "won" ? 1 : 0;
+      return sum + (p.confidence - outcome) ** 2;
+    }, 0) / predictions.length
+  );
+}
+
+function calibrationCurve(predictions: Array<{ confidence: number; status: string }>): string {
+  const buckets: Record<string, { won: number; total: number; midpoint: number }> = {
+    "50–60%": { won: 0, total: 0, midpoint: 0.55 },
+    "60–70%": { won: 0, total: 0, midpoint: 0.65 },
+    "70–80%": { won: 0, total: 0, midpoint: 0.75 },
+    "80%+":   { won: 0, total: 0, midpoint: 0.85 },
+  };
+  for (const p of predictions) {
+    const key =
+      p.confidence < 0.60 ? "50–60%" :
+      p.confidence < 0.70 ? "60–70%" :
+      p.confidence < 0.80 ? "70–80%" : "80%+";
+    buckets[key]!.total++;
+    if (p.status === "won") buckets[key]!.won++;
+  }
+  return Object.entries(buckets)
+    .filter(([, d]) => d.total > 0)
+    .map(([label, d]) => {
+      const actual = d.won / d.total;
+      const expected = d.midpoint;
+      const bias = actual > expected + 0.05 ? "↑under" : actual < expected - 0.05 ? "↑over" : "✓ok";
+      return `  ${label}: ${d.won}/${d.total} actual=${(actual * 100).toFixed(0)}% expected≈${(expected * 100).toFixed(0)}% ${bias}`;
+    })
+    .join("\n");
+}
+
+function evAccuracy(predictions: Array<{ confidence: number; odds: number; status: string }>): { positiveEvWin: number; positiveEvTotal: number; negativeEvWin: number; negativeEvTotal: number } {
+  const result = { positiveEvWin: 0, positiveEvTotal: 0, negativeEvWin: 0, negativeEvTotal: 0 };
+  for (const p of predictions) {
+    const ev = p.confidence * (p.odds - 1) - (1 - p.confidence);
+    if (ev > 0) {
+      result.positiveEvTotal++;
+      if (p.status === "won") result.positiveEvWin++;
+    } else {
+      result.negativeEvTotal++;
+      if (p.status === "won") result.negativeEvWin++;
+    }
+  }
+  return result;
+}
 
 router.get("/training/history", async (req, res): Promise<void> => {
   const records = await db
     .select()
     .from(trainingRecordsTable)
     .orderBy(desc(trainingRecordsTable.triggeredAt));
-
   res.json(records);
 });
 
@@ -26,62 +76,80 @@ router.post("/training/trigger", async (req, res): Promise<void> => {
   let notes = "Insufficient data for calibration (need ≥ 5 resolved predictions).";
 
   if (resolved.length >= 5) {
-    const recentSamples = [...resolved]
+    const recent = [...resolved]
       .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
-      .slice(0, 30);
+      .slice(0, 40);
 
-    const sportBreakdown: Record<string, { won: number; total: number; avgConf: number }> = {};
-    for (const p of recentSamples) {
-      if (!sportBreakdown[p.sport]) sportBreakdown[p.sport] = { won: 0, total: 0, avgConf: 0 };
-      sportBreakdown[p.sport].total++;
-      sportBreakdown[p.sport].avgConf += p.confidence;
-      if (p.status === "won") sportBreakdown[p.sport].won++;
+    const bs = brierScore(recent);
+    const calCurve = calibrationCurve(recent);
+    const evStats = evAccuracy(recent);
+
+    const sportMap: Record<string, { won: number; total: number; avgConf: number; avgOdds: number }> = {};
+    for (const p of recent) {
+      if (!sportMap[p.sport]) sportMap[p.sport] = { won: 0, total: 0, avgConf: 0, avgOdds: 0 };
+      sportMap[p.sport]!.total++;
+      sportMap[p.sport]!.avgConf += p.confidence;
+      sportMap[p.sport]!.avgOdds += p.odds;
+      if (p.status === "won") sportMap[p.sport]!.won++;
     }
-    for (const s of Object.values(sportBreakdown)) {
+    for (const s of Object.values(sportMap)) {
       s.avgConf = s.avgConf / s.total;
+      s.avgOdds = s.avgOdds / s.total;
     }
 
-    const confBuckets = { high: { won: 0, total: 0 }, mid: { won: 0, total: 0 }, low: { won: 0, total: 0 } };
-    for (const p of recentSamples) {
-      const bucket = p.confidence >= 0.7 ? "high" : p.confidence >= 0.55 ? "mid" : "low";
-      confBuckets[bucket].total++;
-      if (p.status === "won") confBuckets[bucket].won++;
+    const outcomeBreakdown: Record<string, { won: number; total: number }> = {};
+    for (const p of recent) {
+      if (!outcomeBreakdown[p.predictedOutcome]) outcomeBreakdown[p.predictedOutcome] = { won: 0, total: 0 };
+      outcomeBreakdown[p.predictedOutcome]!.total++;
+      if (p.status === "won") outcomeBreakdown[p.predictedOutcome]!.won++;
     }
 
-    const prompt = `You are a quantitative sports betting model calibrator. Analyse these recent prediction outcomes and provide calibration insights.
+    const prompt = `You are a quantitative betting model calibrator. Evaluate this model's performance rigorously.
 
-OVERALL PERFORMANCE
-Total resolved: ${samplesProcessed}
-Won: ${won} (${accuracyBefore != null ? (accuracyBefore * 100).toFixed(1) : "N/A"}% accuracy)
+═══ OVERALL ═══
+Resolved: ${samplesProcessed} | Won: ${won} | Raw accuracy: ${accuracyBefore != null ? (accuracyBefore * 100).toFixed(1) : "N/A"}%
+Brier Score: ${bs.toFixed(4)} (0.00=perfect, 0.25=random, 1.00=inverted)
 
-SPORT BREAKDOWN (recent 30)
-${Object.entries(sportBreakdown)
-  .map(([s, d]) => `${s}: ${d.won}/${d.total} (${((d.won / d.total) * 100).toFixed(1)}%) avg_conf=${(d.avgConf * 100).toFixed(1)}%`)
+═══ CALIBRATION CURVE ═══
+${calCurve || "  Not enough data per bucket."}
+
+═══ EV TRACKING ═══
+Positive-EV bets: ${evStats.positiveEvWin}/${evStats.positiveEvTotal} won${evStats.positiveEvTotal > 0 ? ` (${((evStats.positiveEvWin / evStats.positiveEvTotal) * 100).toFixed(0)}%)` : ""}
+Negative-EV bets: ${evStats.negativeEvWin}/${evStats.negativeEvTotal} won${evStats.negativeEvTotal > 0 ? ` (${((evStats.negativeEvWin / evStats.negativeEvTotal) * 100).toFixed(0)}%)` : ""}
+
+═══ BY SPORT ═══
+${Object.entries(sportMap)
+  .map(([s, d]) => `${s}: ${d.won}/${d.total} (${((d.won / d.total) * 100).toFixed(0)}%) | avg_conf=${(d.avgConf * 100).toFixed(0)}% | avg_odds=${d.avgOdds.toFixed(2)}`)
   .join("\n")}
 
-CONFIDENCE CALIBRATION
-High (≥70%): ${confBuckets.high.won}/${confBuckets.high.total} won
-Mid (55–70%): ${confBuckets.mid.won}/${confBuckets.mid.total} won
-Low (<55%):  ${confBuckets.low.won}/${confBuckets.low.total} won
+═══ BY OUTCOME TYPE ═══
+${Object.entries(outcomeBreakdown)
+  .map(([o, d]) => `${o}: ${d.won}/${d.total} (${((d.won / d.total) * 100).toFixed(0)}%)`)
+  .join("\n")}
 
-RECENT OUTCOMES (last 20, newest first)
-${recentSamples.slice(0, 20).map((p) =>
-  `[${p.status.toUpperCase()}] ${p.sport} | ${p.homeTeam} vs ${p.awayTeam} | pred=${p.predictedOutcome} | actual=${p.actualOutcome ?? "?"} | conf=${(p.confidence * 100).toFixed(0)}% | odds=${p.odds.toFixed(2)}`
-).join("\n")}
+═══ RECENT 20 (newest first) ═══
+${recent.slice(0, 20).map((p) => {
+  const ev = (p.confidence * (p.odds - 1) - (1 - p.confidence)).toFixed(3);
+  return `[${p.status.toUpperCase()}] ${p.sport} | ${p.homeTeam} vs ${p.awayTeam} | pred=${p.predictedOutcome} | actual=${p.actualOutcome ?? "?"} | conf=${(p.confidence * 100).toFixed(0)}% | odds=${p.odds.toFixed(2)} | EV=${ev}`;
+}).join("\n")}
 
-Based on this data, provide calibration insights and an adjusted accuracy estimate. Respond ONLY with valid JSON:
+═══ TASK ═══
+Provide calibration guidance. Respond ONLY with valid JSON:
 {
-  "adjustedAccuracy": <float 0.0–1.0, your calibrated estimate of true model accuracy>,
-  "keyInsights": "<2-3 sentences on patterns in wins/losses, calibration issues>",
-  "calibrationNotes": "<specific adjustments — e.g. overconfident on aways, underperforms on low-odds favourites>",
-  "recommendedMinConfidence": <float 0.50–0.75, suggested minimum confidence threshold>,
-  "recommendedMaxKelly": <float 0.05–0.20, suggested max Kelly fraction given variance>
+  "adjustedAccuracy": <float 0.0–1.0, calibrated true accuracy estimate>,
+  "brierInterpretation": "<1 sentence on Brier score quality>",
+  "keyFindings": "<2–3 sentences: biggest patterns, systematic errors, where edge exists or is lost>",
+  "calibrationAction": "<1–2 sentences: specific fix — e.g. 'reduce confidence by 8% on away dogs', 'avoid low-odds favourites'>",
+  "recommendedMinConfidence": <float 0.50–0.75>,
+  "recommendedMaxKelly": <float 0.03–0.15>,
+  "sportsToFocus": ["<sport1>", "<sport2>"],
+  "sportsToAvoid": ["<sport3>"]
 }`;
 
     const response = await ai.models.generateContent({
       model: "gemini-2.0-flash",
       contents: [{ role: "user", parts: [{ text: prompt }] }],
-      config: { temperature: 0.2, maxOutputTokens: 512 },
+      config: { temperature: 0.15, maxOutputTokens: 700 },
     });
 
     const rawText = (response.text ?? "").trim();
@@ -90,20 +158,30 @@ Based on this data, provide calibration insights and an adjusted accuracy estima
       try {
         const parsed = JSON.parse(jsonMatch[0]) as {
           adjustedAccuracy?: number;
-          keyInsights?: string;
-          calibrationNotes?: string;
+          brierInterpretation?: string;
+          keyFindings?: string;
+          calibrationAction?: string;
           recommendedMinConfidence?: number;
           recommendedMaxKelly?: number;
+          sportsToFocus?: string[];
+          sportsToAvoid?: string[];
         };
         accuracyAfter = parsed.adjustedAccuracy ?? null;
-        const parts = [parsed.keyInsights, parsed.calibrationNotes];
-        if (parsed.recommendedMinConfidence != null) {
-          parts.push(`Recommended min confidence: ${(parsed.recommendedMinConfidence * 100).toFixed(0)}%`);
-        }
-        if (parsed.recommendedMaxKelly != null) {
-          parts.push(`Recommended max Kelly: ${(parsed.recommendedMaxKelly * 100).toFixed(1)}%`);
-        }
-        notes = parts.filter(Boolean).join(" | ");
+
+        const parts: string[] = [];
+        if (parsed.brierInterpretation) parts.push(`Brier: ${parsed.brierInterpretation}`);
+        if (parsed.keyFindings) parts.push(parsed.keyFindings);
+        if (parsed.calibrationAction) parts.push(`Action: ${parsed.calibrationAction}`);
+        if (parsed.recommendedMinConfidence != null)
+          parts.push(`Min confidence: ${(parsed.recommendedMinConfidence * 100).toFixed(0)}%`);
+        if (parsed.recommendedMaxKelly != null)
+          parts.push(`Max Kelly: ${(parsed.recommendedMaxKelly * 100).toFixed(1)}%`);
+        if (parsed.sportsToFocus?.length)
+          parts.push(`Focus: ${parsed.sportsToFocus.join(", ")}`);
+        if (parsed.sportsToAvoid?.length)
+          parts.push(`Avoid: ${parsed.sportsToAvoid.join(", ")}`);
+
+        notes = parts.join(" | ");
       } catch {
         req.log.warn("Failed to parse training calibration JSON");
       }
@@ -122,11 +200,11 @@ Based on this data, provide calibration insights and an adjusted accuracy estima
     })
     .returning();
 
-  req.log.info({ recordId: record.id, samplesProcessed, accuracyBefore, accuracyAfter }, "Training triggered");
+  req.log.info({ recordId: record.id, samplesProcessed, accuracyBefore, accuracyAfter }, "Training completed");
 
   res.json({
     success: true,
-    message: `Training completed. Processed ${samplesProcessed} resolved predictions. Calibrated accuracy: ${accuracyAfter != null ? (accuracyAfter * 100).toFixed(1) + "%" : "N/A"}`,
+    message: `Training completed. ${samplesProcessed} samples. Calibrated accuracy: ${accuracyAfter != null ? (accuracyAfter * 100).toFixed(1) + "%" : "N/A"}.`,
     samplesProcessed,
   });
 });
