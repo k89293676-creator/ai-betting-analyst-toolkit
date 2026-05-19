@@ -3,13 +3,25 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: AI Betting Analyst Toolkit API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: predictions
+    description: AI betting predictions
+  - name: odds
+    description: Live odds data
+  - name: telegram
+    description: Telegram notifications
+  - name: metrics
+    description: Performance metrics and analytics
+  - name: training
+    description: Model training and feedback loop
+  - name: gemini
+    description: Gemini AI chat and image operations
 paths:
   /healthz:
     get:
@@ -24,6 +36,397 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /predictions:
+    get:
+      operationId: listPredictions
+      tags: [predictions]
+      summary: List all predictions
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: sport
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: List of predictions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Prediction"
+    post:
+      operationId: createPrediction
+      tags: [predictions]
+      summary: Generate an AI prediction for a match
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PredictionInput"
+      responses:
+        "201":
+          description: Created prediction
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Prediction"
+
+  /predictions/{id}:
+    get:
+      operationId: getPrediction
+      tags: [predictions]
+      summary: Get a single prediction
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Prediction
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Prediction"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+    delete:
+      operationId: deletePrediction
+      tags: [predictions]
+      summary: Delete a prediction
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /predictions/{id}/result:
+    patch:
+      operationId: updatePredictionResult
+      tags: [predictions]
+      summary: Record the actual outcome of a prediction
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PredictionResultInput"
+      responses:
+        "200":
+          description: Updated prediction
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Prediction"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /odds:
+    get:
+      operationId: getOdds
+      tags: [odds]
+      summary: Fetch live odds for a sport
+      parameters:
+        - name: sport
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: regions
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of matches with odds
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MatchOdds"
+
+  /odds/sports:
+    get:
+      operationId: getSports
+      tags: [odds]
+      summary: List available sports from The Odds API
+      responses:
+        "200":
+          description: List of sports
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Sport"
+
+  /telegram/test:
+    post:
+      operationId: sendTelegramTest
+      tags: [telegram]
+      summary: Send a test Telegram message
+      responses:
+        "200":
+          description: Message sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TelegramResult"
+
+  /telegram/send:
+    post:
+      operationId: sendTelegramPrediction
+      tags: [telegram]
+      summary: Send a prediction to Telegram
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TelegramSendInput"
+      responses:
+        "200":
+          description: Message sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TelegramResult"
+
+  /metrics/performance:
+    get:
+      operationId: getPerformanceMetrics
+      tags: [metrics]
+      summary: Get historical performance metrics
+      parameters:
+        - name: days
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Performance metrics list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PerformanceMetric"
+
+  /metrics/summary:
+    get:
+      operationId: getMetricsSummary
+      tags: [metrics]
+      summary: Get overall summary statistics
+      responses:
+        "200":
+          description: Summary statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetricsSummary"
+
+  /training/history:
+    get:
+      operationId: getTrainingHistory
+      tags: [training]
+      summary: Get training data history
+      responses:
+        "200":
+          description: List of training records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TrainingRecord"
+
+  /training/trigger:
+    post:
+      operationId: triggerTraining
+      tags: [training]
+      summary: Manually trigger a training update
+      responses:
+        "200":
+          description: Training triggered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrainingResult"
+
+  /gemini/conversations:
+    get:
+      operationId: listGeminiConversations
+      tags: [gemini]
+      summary: List all conversations
+      responses:
+        "200":
+          description: List of conversations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/GeminiConversation"
+    post:
+      operationId: createGeminiConversation
+      tags: [gemini]
+      summary: Create a new conversation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GeminiConversationInput"
+      responses:
+        "201":
+          description: Created conversation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GeminiConversation"
+
+  /gemini/conversations/{id}:
+    get:
+      operationId: getGeminiConversation
+      tags: [gemini]
+      summary: Get conversation with messages
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Conversation with messages
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GeminiConversationWithMessages"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GeminiError"
+    delete:
+      operationId: deleteGeminiConversation
+      tags: [gemini]
+      summary: Delete a conversation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GeminiError"
+
+  /gemini/conversations/{id}/messages:
+    get:
+      operationId: listGeminiMessages
+      tags: [gemini]
+      summary: List messages in a conversation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: List of messages
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/GeminiMessage"
+    post:
+      operationId: sendGeminiMessage
+      tags: [gemini]
+      summary: Send a message and receive an AI response (SSE stream)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GeminiMessageInput"
+      responses:
+        "200":
+          description: SSE stream of assistant response chunks
+          content:
+            text/event-stream: {}
+
+  /gemini/generate-image:
+    post:
+      operationId: generateGeminiImage
+      tags: [gemini]
+      summary: Generate an image from a text prompt
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GeminiImageInput"
+      responses:
+        "200":
+          description: Generated image data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GeminiImageOutput"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +437,402 @@ components:
       required:
         - status
 
+    ApiError:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+
+    Prediction:
+      type: object
+      properties:
+        id:
+          type: integer
+        sport:
+          type: string
+        homeTeam:
+          type: string
+        awayTeam:
+          type: string
+        matchDate:
+          type: string
+          format: date-time
+        predictedOutcome:
+          type: string
+        confidence:
+          type: number
+        odds:
+          type: number
+        kellyFraction:
+          type: number
+        reasoning:
+          type: string
+        status:
+          type: string
+        actualOutcome:
+          type: ["string", "null"]
+        sentToTelegram:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - sport
+        - homeTeam
+        - awayTeam
+        - matchDate
+        - predictedOutcome
+        - confidence
+        - odds
+        - kellyFraction
+        - reasoning
+        - status
+        - actualOutcome
+        - sentToTelegram
+        - createdAt
+        - updatedAt
+
+    PredictionInput:
+      type: object
+      properties:
+        sport:
+          type: string
+        homeTeam:
+          type: string
+        awayTeam:
+          type: string
+        matchDate:
+          type: string
+          format: date-time
+        homeOdds:
+          type: number
+        drawOdds:
+          type: ["number", "null"]
+        awayOdds:
+          type: number
+      required:
+        - sport
+        - homeTeam
+        - awayTeam
+        - matchDate
+        - homeOdds
+        - awayOdds
+
+    PredictionResultInput:
+      type: object
+      properties:
+        actualOutcome:
+          type: string
+        status:
+          type: string
+      required:
+        - actualOutcome
+        - status
+
+    MatchOdds:
+      type: object
+      properties:
+        id:
+          type: string
+        sport:
+          type: string
+        homeTeam:
+          type: string
+        awayTeam:
+          type: string
+        commenceTime:
+          type: string
+          format: date-time
+        bookmakers:
+          type: array
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+              title:
+                type: string
+              markets:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    key:
+                      type: string
+                    outcomes:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          name:
+                            type: string
+                          price:
+                            type: number
+                        required:
+                          - name
+                          - price
+                    required:
+                      - key
+                      - outcomes
+            required:
+              - key
+              - title
+              - markets
+      required:
+        - id
+        - sport
+        - homeTeam
+        - awayTeam
+        - commenceTime
+        - bookmakers
+
+    Sport:
+      type: object
+      properties:
+        key:
+          type: string
+        group:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        active:
+          type: boolean
+      required:
+        - key
+        - group
+        - title
+        - description
+        - active
+
+    TelegramResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        messageId:
+          type: ["integer", "null"]
+      required:
+        - success
+        - messageId
+
+    TelegramSendInput:
+      type: object
+      properties:
+        predictionId:
+          type: integer
+      required:
+        - predictionId
+
+    PerformanceMetric:
+      type: object
+      properties:
+        id:
+          type: integer
+        date:
+          type: string
+          format: date-time
+        sport:
+          type: ["string", "null"]
+        totalPredictions:
+          type: integer
+        correctPredictions:
+          type: integer
+        accuracy:
+          type: number
+        roi:
+          type: number
+        avgConfidence:
+          type: number
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - date
+        - sport
+        - totalPredictions
+        - correctPredictions
+        - accuracy
+        - roi
+        - avgConfidence
+        - createdAt
+
+    MetricsSummary:
+      type: object
+      properties:
+        totalPredictions:
+          type: integer
+        pendingPredictions:
+          type: integer
+        wonPredictions:
+          type: integer
+        lostPredictions:
+          type: integer
+        overallAccuracy:
+          type: number
+        overallRoi:
+          type: number
+        avgConfidence:
+          type: number
+        bestSport:
+          type: ["string", "null"]
+        currentStreak:
+          type: integer
+      required:
+        - totalPredictions
+        - pendingPredictions
+        - wonPredictions
+        - lostPredictions
+        - overallAccuracy
+        - overallRoi
+        - avgConfidence
+        - bestSport
+        - currentStreak
+
+    TrainingRecord:
+      type: object
+      properties:
+        id:
+          type: integer
+        triggeredAt:
+          type: string
+          format: date-time
+        samplesProcessed:
+          type: integer
+        accuracyBefore:
+          type: ["number", "null"]
+        accuracyAfter:
+          type: ["number", "null"]
+        status:
+          type: string
+        notes:
+          type: ["string", "null"]
+      required:
+        - id
+        - triggeredAt
+        - samplesProcessed
+        - accuracyBefore
+        - accuracyAfter
+        - status
+        - notes
+
+    TrainingResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        samplesProcessed:
+          type: integer
+      required:
+        - success
+        - message
+        - samplesProcessed
+
+    GeminiConversation:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - title
+        - createdAt
+
+    GeminiMessage:
+      type: object
+      properties:
+        id:
+          type: integer
+        conversationId:
+          type: integer
+        role:
+          type: string
+        content:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - conversationId
+        - role
+        - content
+        - createdAt
+
+    GeminiConversationInput:
+      type: object
+      properties:
+        title:
+          type: string
+      required:
+        - title
+
+    GeminiMessageInput:
+      type: object
+      properties:
+        content:
+          type: string
+      required:
+        - content
+
+    GeminiConversationWithMessages:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/GeminiMessage"
+      required:
+        - id
+        - title
+        - createdAt
+        - messages
+
+    GeminiImageInput:
+      type: object
+      properties:
+        prompt:
+          type: string
+      required:
+        - prompt
+
+    GeminiImageOutput:
+      type: object
+      properties:
+        b64_json:
+          type: string
+        mimeType:
+          type: string
+      required:
+        - b64_json
+        - mimeType
+
+    GeminiError:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
